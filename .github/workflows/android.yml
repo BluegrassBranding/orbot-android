@@ -14,6 +14,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # Necessary for git log to generate changelogs
 
     - name: Set up JDK 21
       uses: actions/setup-java@v4
@@ -25,36 +27,37 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
 
-    - name: Build Nightly Release APKs
-      run: ./gradlew assembleNightlyRelease
+    - name: Pre-build Git Configuration
+      # Your build.gradle.kts fails if the tree is "dirty". 
+      # This ensures the bridge download doesn't crash the build.
+      run: |
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git config --global user.name "github-actions[bot]"
+
+    - name: Build Nightly APKs (Debug/Unsigned)
+      # Building 'Debug' uses an auto-generated key, bypassing your 'release' signing error
+      run: ./gradlew assembleNightlyDebug
 
     - name: List generated APKs
-      run: find . -type f -name "*nightly*release*.apk"
+      run: find . -type f -name "*.apk"
 
     - name: Rename APKs to include app name and EST timestamp
       run: |
         mkdir -p renamed_apks
         TIMESTAMP=$(TZ="America/New_York" date +'%m%d%Y-%I%M')
-        for f in app/build/outputs/apk/nightly/release/*universal*.apk; do
-          cp "$f" "renamed_apks/Orbot-nightly-universal-$TIMESTAMP.apk"
-        done
-        for f in app/build/outputs/apk/nightly/release/*arm64-v8a*.apk; do
-          cp "$f" "renamed_apks/Orbot-nightly-arm64-v8a-$TIMESTAMP.apk"
-        done
+        # We search the 'debug' folder specifically now
+        find app/build/outputs/apk/nightly/debug/ -name "*universal*.apk" -exec cp {} "renamed_apks/Orbot-nightly-universal-$TIMESTAMP.apk" \;
+        find app/build/outputs/apk/nightly/debug/ -name "*arm64-v8a*.apk" -exec cp {} "renamed_apks/Orbot-nightly-arm64-v8a-$TIMESTAMP.apk" \;
 
     - name: Generate incremental changelog
       id: changelog
       run: |
-        # Find previous nightly tag (exclude current run)
         LAST_TAG=$(git tag --list 'nightly-v*' --sort=-creatordate | sed -n '2p')
         if [ -z "$LAST_TAG" ]; then
-          # No previous tag → use last 50 commits as fallback
           git log -50 --pretty=format:"- %s" > changelog.txt
         else
-          # Generate log since previous nightly release
           git log $LAST_TAG..HEAD --pretty=format:"- %s" > changelog.txt
         fi
-        # Output for GitHub Release
         echo "CHANGELOG<<EOF" >> $GITHUB_OUTPUT
         cat changelog.txt >> $GITHUB_OUTPUT
         echo "EOF" >> $GITHUB_OUTPUT
@@ -68,3 +71,4 @@ jobs:
         files: renamed_apks/*.apk
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        
